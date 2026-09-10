@@ -6,76 +6,90 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-let systemData = {
-  orbUrl: "",
-  parcelName: "ICE",
-  region: "Standalone",
-  lastSeen: Date.now(),
-  settings: {
-    mode: "lockdown",
-    enableCountdown: 1,
-    countdown: 10,
-    action: "eject",
-    enableGroupPass: 0,
-    enableHeight: 0,
-    minHeight: 1.20,
-    maxHeight: 2.10,
-    discordWebhook: "",
-    whitelist: []
-  },
-  visitorLogs: []
-};
+// Multi-tenant memory store: devices[ownerId] = { ... }
+let devices = {};
+
+function getDevice(ownerId) {
+  if (!ownerId) return null;
+  if (!devices[ownerId]) {
+    devices[ownerId] = {
+      orbUrl: "",
+      parcelName: "Main Parcel",
+      region: "Sandbox",
+      lastSeen: Date.now(),
+      settings: {
+        mode: "lockdown",
+        enableCountdown: 1,
+        countdown: 10,
+        action: "eject",
+        enableGroupPass: 0,
+        enableHeight: 0,
+        minHeight: 1.20,
+        maxHeight: 2.10,
+        discordWebhook: "",
+        whitelist: []
+      },
+      visitorLogs: []
+    };
+  }
+  return devices[ownerId];
+}
 
 // 1. Orb Registration
 app.post('/api/register-orb', (req, res) => {
-  const { orbUrl, parcelName, region } = req.body;
-  if (orbUrl) systemData.orbUrl = orbUrl;
-  if (parcelName) systemData.parcelName = parcelName;
-  if (region) systemData.region = region;
-  systemData.lastSeen = Date.now();
-  console.log(`[ORB ONLINE] ${systemData.parcelName} @ ${systemData.region}`);
+  const { ownerId, orbUrl, parcelName, region } = req.body;
+  if (!ownerId) return res.status(400).json({ error: "Missing ownerId" });
+
+  const device = getDevice(ownerId);
+  if (orbUrl) device.orbUrl = orbUrl;
+  if (parcelName) device.parcelName = parcelName;
+  if (region) device.region = region;
+  device.lastSeen = Date.now();
+
+  console.log(`[ORB REGISTERED] Owner: ${ownerId} | Parcel: ${device.parcelName} @ ${device.region}`);
   return res.json({ status: "success" });
 });
 
-// 2. Event Dispatcher (Arrivals, Departures, Breaches)
+// 2. Event Dispatcher
 app.post('/api/record-event', async (req, res) => {
-  const { eventType, avatarName, reason } = req.body;
-  if (!avatarName) return res.status(400).json({ error: "Missing avatarName" });
+  const { ownerId, eventType, avatarName, reason } = req.body;
+  if (!ownerId || !avatarName) return res.status(400).json({ error: "Missing parameters" });
 
+  const device = getDevice(ownerId);
   const now = new Date();
   const timeStr = now.toISOString().substring(11, 19) + " UTC";
 
   if (eventType === 'enter') {
-    const exists = systemData.visitorLogs.find(v => v.name === avatarName);
+    const exists = device.visitorLogs.find(v => v.name === avatarName);
     if (!exists) {
-      systemData.visitorLogs.unshift({ name: avatarName, time: timeStr });
-      if (systemData.visitorLogs.length > 50) systemData.visitorLogs.pop();
+      device.visitorLogs.unshift({ name: avatarName, time: timeStr });
+      if (device.visitorLogs.length > 50) device.visitorLogs.pop();
     }
   }
 
-  if (systemData.settings.discordWebhook) {
+  if (device.settings.discordWebhook) {
     let embedTitle = "Avatar Entered";
-    let embedColor = 3066993; // Green
+    let embedColor = 3066993;
 
     if (eventType === 'leave') {
       embedTitle = "Avatar Left";
-      embedColor = 10070709; // Grey
+      embedColor = 10070709;
     } else if (eventType === 'breach') {
       embedTitle = "Intruder Ejected";
-      embedColor = 15158332; // Red
+      embedColor = 15158332;
     }
 
     try {
-      await axios.post(systemData.settings.discordWebhook, {
+      await axios.post(device.settings.discordWebhook, {
         embeds: [{
           title: embedTitle,
-          description: `**Avatar:** \`${avatarName}\`\n**Details:** ${reason}\n**Parcel:** ${systemData.parcelName} (${systemData.region})`,
+          description: `**Avatar:** \`${avatarName}\`\n**Details:** ${reason}\n**Parcel:** ${device.parcelName} (${device.region})`,
           color: embedColor,
           timestamp: new Date()
         }]
       });
     } catch (e) {
-      console.error("[DISCORD ERROR]", e.message);
+      console.error(`[DISCORD FAIL] Owner ${ownerId}: ${e.message}`);
     }
   }
 
@@ -84,45 +98,63 @@ app.post('/api/record-event', async (req, res) => {
 
 // 3. Settings Getter
 app.get('/api/settings', (req, res) => {
-  res.json({
+  const ownerId = req.query.id;
+  if (!ownerId) {
+    return res.json({
+      status: "waiting",
+      parcelName: "Scan QR or Click Orb",
+      region: "No Device Linked",
+      totalVisits: 0,
+      visitorLogs: [],
+      settings: {}
+    });
+  }
+
+  const device = getDevice(ownerId);
+  return res.json({
     status: "success",
-    parcelName: systemData.parcelName,
-    region: systemData.region,
-    totalVisits: systemData.visitorLogs.length,
-    visitorLogs: systemData.visitorLogs,
-    settings: systemData.settings
+    parcelName: device.parcelName,
+    region: device.region,
+    totalVisits: device.visitorLogs.length,
+    visitorLogs: device.visitorLogs,
+    settings: device.settings
   });
 });
 
 // 4. Settings Setter & In-World Sync
 app.post('/api/settings', async (req, res) => {
-  systemData.settings = { ...systemData.settings, ...req.body };
+  const ownerId = req.query.id || req.body.ownerId;
+  if (!ownerId) return res.status(400).json({ error: "Missing ownerId" });
 
-  if (systemData.orbUrl) {
+  const device = getDevice(ownerId);
+  device.settings = { ...device.settings, ...req.body };
+
+  if (device.orbUrl) {
     try {
-      await axios.post(systemData.orbUrl, {
+      await axios.post(device.orbUrl, {
         command: "CONFIG_UPDATE",
-        config: systemData.settings
+        config: device.settings
       }, { timeout: 4000 });
-      console.log("[SYNC] Settings delivered to in-world Orb.");
+      console.log(`[SYNC SUCCESS] Pushed settings to orb for owner: ${ownerId}`);
     } catch (err) {
-      console.error("[SYNC FAIL] Could not reach orb:", err.message);
+      console.error(`[SYNC FAIL] Could not reach orb for ${ownerId}: ${err.message}`);
     }
   }
 
-  return res.json({ status: "success", settings: systemData.settings });
+  return res.json({ status: "success", settings: device.settings });
 });
 
 // 5. Discord Ping Verification
 app.post('/api/test-discord', async (req, res) => {
-  const { webhookUrl } = req.body;
+  const { webhookUrl, ownerId } = req.body;
   if (!webhookUrl) return res.status(400).json({ error: "Missing webhook" });
 
+  const device = getDevice(ownerId);
   try {
     await axios.post(webhookUrl, {
       embeds: [{
         title: "ICE Security Operational",
-        description: `Connected to **${systemData.parcelName}** (${systemData.region}). Real-time event notifications active.`,
+        description: `Connected to **${device.parcelName}** (${device.region}). Real-time event notifications active.`,
         color: 3447003,
         timestamp: new Date()
       }]
@@ -134,4 +166,4 @@ app.post('/api/test-discord', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`ICE Security Backend running on port ${PORT}`));
+app.listen(PORT, () => console.log(`ICE Security Multi-Tenant Engine running on port ${PORT}`));
