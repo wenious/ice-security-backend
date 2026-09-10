@@ -153,7 +153,7 @@ app.get('/api/settings', (req, res) => {
   });
 });
 
-// 6. Settings Setter & In-World Sync
+// 6. Settings Setter & In-World Sync (CSV Whitelist Dispatcher)
 app.post('/api/settings', async (req, res) => {
   const ownerId = req.query.id || req.body.ownerId;
   if (!ownerId) return res.status(400).json({ error: "Missing ownerId" });
@@ -163,11 +163,16 @@ app.post('/api/settings', async (req, res) => {
 
   if (device.orbUrl) {
     try {
+      const payloadConfig = {
+        ...device.settings,
+        whitelistStr: (device.settings.whitelist || []).join(",")
+      };
+
       await axios.post(device.orbUrl, {
         command: "CONFIG_UPDATE",
-        config: device.settings
+        config: payloadConfig
       }, { timeout: 4000 });
-      console.log(`[SYNC SUCCESS] Settings delivered to ${ownerId}`);
+      console.log(`[SYNC SUCCESS] Settings and CSV Whitelist delivered to ${ownerId}`);
     } catch (err) {
       console.error(`[SYNC FAIL] Could not reach orb for ${ownerId}: ${err.message}`);
     }
@@ -198,4 +203,4 @@ app.post('/api/test-discord', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`ICE Security Engine active on port ${PORT}`));
+app.listen(PORT, () => console.log(`ICE Security Multi-Tenant Engine running on port ${PORT}`));
