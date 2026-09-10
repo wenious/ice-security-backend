@@ -13,7 +13,7 @@ let systemData = {
   lastSeen: Date.now(),
   settings: {
     mode: "lockdown",
-    enableCountdown: 1, // 1 = Warning açık, 0 = Uyarı kapalı (Anında)
+    enableCountdown: 1,
     countdown: 10,
     action: "eject",
     enableGroupPass: 0,
@@ -23,10 +23,10 @@ let systemData = {
     discordWebhook: "",
     whitelist: []
   },
-  visitorLogs: [] // { name: "Avatar Name", time: "19:42" }
+  visitorLogs: []
 };
 
-// 1. Orb Kayıt
+// 1. Orb Registration
 app.post('/api/register-orb', (req, res) => {
   const { orbUrl, parcelName, region } = req.body;
   if (orbUrl) systemData.orbUrl = orbUrl;
@@ -37,61 +37,52 @@ app.post('/api/register-orb', (req, res) => {
   return res.json({ status: "success" });
 });
 
-// 2. Ziyaretçi Kaydı (LSL'den gelir)
-app.post('/api/record-visit', async (req, res) => {
-  const { avatarName } = req.body;
-  if (!avatarName) return res.status(400).json({ error: "Missing name" });
+// 2. Event Dispatcher (Arrivals, Departures, Breaches)
+app.post('/api/record-event', async (req, res) => {
+  const { eventType, avatarName, reason } = req.body;
+  if (!avatarName) return res.status(400).json({ error: "Missing avatarName" });
 
   const now = new Date();
-  const timeStr = now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const timeStr = now.toISOString().substring(11, 19) + " UTC";
 
-  // Tekil olarak loglara ekle
-  const exists = systemData.visitorLogs.find(v => v.name === avatarName);
-  if (!exists) {
-    systemData.visitorLogs.unshift({ name: avatarName, time: timeStr });
-    if (systemData.visitorLogs.length > 50) systemData.visitorLogs.pop(); // Son 50 kişi
+  if (eventType === 'enter') {
+    const exists = systemData.visitorLogs.find(v => v.name === avatarName);
+    if (!exists) {
+      systemData.visitorLogs.unshift({ name: avatarName, time: timeStr });
+      if (systemData.visitorLogs.length > 50) systemData.visitorLogs.pop();
+    }
   }
 
-  // Discord bildirimi açıksa webhook'a fırlat
   if (systemData.settings.discordWebhook) {
+    let embedTitle = "Avatar Entered";
+    let embedColor = 3066993; // Green
+
+    if (eventType === 'leave') {
+      embedTitle = "Avatar Left";
+      embedColor = 10070709; // Grey
+    } else if (eventType === 'breach') {
+      embedTitle = "Intruder Ejected";
+      embedColor = 15158332; // Red
+    }
+
     try {
       await axios.post(systemData.settings.discordWebhook, {
         embeds: [{
-          title: "👤 New Visitor Detected",
-          description: `**Avatar:** \`${avatarName}\`\n**Parcel:** ${systemData.parcelName}\n**Region:** ${systemData.region}`,
-          color: 3066993,
+          title: embedTitle,
+          description: `**Avatar:** \`${avatarName}\`\n**Details:** ${reason}\n**Parcel:** ${systemData.parcelName} (${systemData.region})`,
+          color: embedColor,
           timestamp: new Date()
         }]
       });
     } catch (e) {
-      console.error("[DISCORD ERROR] Failed to forward visitor log:", e.message);
+      console.error("[DISCORD ERROR]", e.message);
     }
   }
 
-  return res.json({ status: "success", count: systemData.visitorLogs.length });
-});
-
-// 3. İhlal Bildirimi (LSL Eject basınca gelir)
-app.post('/api/record-breach', async (req, res) => {
-  const { avatarName, reason } = req.body;
-  if (systemData.settings.discordWebhook) {
-    try {
-      await axios.post(systemData.settings.discordWebhook, {
-        embeds: [{
-          title: "🚨 Intruder Ejected",
-          description: `**Avatar:** \`${avatarName}\`\n**Reason:** ${reason}\n**Parcel:** ${systemData.parcelName}\n**Action:** ${systemData.settings.action.toUpperCase()}`,
-          color: 15158332,
-          timestamp: new Date()
-        }]
-      });
-    } catch (e) {
-      console.error("[DISCORD BREACH] Webhook failed:", e.message);
-    }
-  }
   return res.json({ status: "success" });
 });
 
-// 4. Ayarları Getir
+// 3. Settings Getter
 app.get('/api/settings', (req, res) => {
   res.json({
     status: "success",
@@ -103,7 +94,7 @@ app.get('/api/settings', (req, res) => {
   });
 });
 
-// 5. Ayarları Kaydet ve Orb'a İlet
+// 4. Settings Setter & In-World Sync
 app.post('/api/settings', async (req, res) => {
   systemData.settings = { ...systemData.settings, ...req.body };
 
@@ -122,7 +113,7 @@ app.post('/api/settings', async (req, res) => {
   return res.json({ status: "success", settings: systemData.settings });
 });
 
-// 6. Test Discord
+// 5. Discord Ping Verification
 app.post('/api/test-discord', async (req, res) => {
   const { webhookUrl } = req.body;
   if (!webhookUrl) return res.status(400).json({ error: "Missing webhook" });
@@ -130,17 +121,17 @@ app.post('/api/test-discord', async (req, res) => {
   try {
     await axios.post(webhookUrl, {
       embeds: [{
-        title: "🛡️ ICE Security • System Operational",
-        description: `Connected to **${systemData.parcelName}** (${systemData.region}). Real-time intruder and visitor alerts are now active.`,
+        title: "ICE Security Operational",
+        description: `Connected to **${systemData.parcelName}** (${systemData.region}). Real-time event notifications active.`,
         color: 3447003,
         timestamp: new Date()
       }]
     });
     return res.json({ status: "success" });
   } catch (err) {
-    return res.status(500).json({ error: "Discord ping error" });
+    return res.status(500).json({ error: "Discord ping failed" });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`ICE Security Backend alive on port ${PORT}`));
+app.listen(PORT, () => console.log(`ICE Security Backend running on port ${PORT}`));
