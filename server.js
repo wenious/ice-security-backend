@@ -6,7 +6,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Multi-tenant memory store: devices[ownerId] = { ... }
 let devices = {};
 
 function getDevice(ownerId) {
@@ -29,7 +28,8 @@ function getDevice(ownerId) {
         discordWebhook: "",
         whitelist: []
       },
-      visitorLogs: []
+      visitorLogs: [],
+      onlineAvatars: [] // Live presence
     };
   }
   return devices[ownerId];
@@ -50,7 +50,17 @@ app.post('/api/register-orb', (req, res) => {
   return res.json({ status: "success" });
 });
 
-// 2. Event Dispatcher
+// 2. Live Presence Sync (Online Avatars)
+app.post('/api/update-live-presence', (req, res) => {
+  const { ownerId, onlineAvatars } = req.body;
+  if (!ownerId) return res.status(400).json({ error: "Missing ownerId" });
+
+  const device = getDevice(ownerId);
+  device.onlineAvatars = onlineAvatars || [];
+  return res.json({ status: "success" });
+});
+
+// 3. Event Dispatcher
 app.post('/api/record-event', async (req, res) => {
   const { ownerId, eventType, avatarName, reason } = req.body;
   if (!ownerId || !avatarName) return res.status(400).json({ error: "Missing parameters" });
@@ -96,7 +106,7 @@ app.post('/api/record-event', async (req, res) => {
   return res.json({ status: "success" });
 });
 
-// 3. Settings Getter
+// 4. Settings & Live Data Getter
 app.get('/api/settings', (req, res) => {
   const ownerId = req.query.id;
   if (!ownerId) {
@@ -106,6 +116,7 @@ app.get('/api/settings', (req, res) => {
       region: "No Device Linked",
       totalVisits: 0,
       visitorLogs: [],
+      onlineAvatars: [],
       settings: {}
     });
   }
@@ -117,11 +128,12 @@ app.get('/api/settings', (req, res) => {
     region: device.region,
     totalVisits: device.visitorLogs.length,
     visitorLogs: device.visitorLogs,
+    onlineAvatars: device.onlineAvatars || [],
     settings: device.settings
   });
 });
 
-// 4. Settings Setter & In-World Sync
+// 5. Settings Setter & In-World Sync
 app.post('/api/settings', async (req, res) => {
   const ownerId = req.query.id || req.body.ownerId;
   if (!ownerId) return res.status(400).json({ error: "Missing ownerId" });
@@ -144,7 +156,7 @@ app.post('/api/settings', async (req, res) => {
   return res.json({ status: "success", settings: device.settings });
 });
 
-// 5. Discord Ping Verification
+// 6. Discord Ping Verification
 app.post('/api/test-discord', async (req, res) => {
   const { webhookUrl, ownerId } = req.body;
   if (!webhookUrl) return res.status(400).json({ error: "Missing webhook" });
