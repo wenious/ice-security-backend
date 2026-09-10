@@ -29,7 +29,7 @@ function getDevice(ownerId) {
         whitelist: []
       },
       visitorLogs: [],
-      onlineAvatars: [] // Live presence
+      onlineAvatars: []
     };
   }
   return devices[ownerId];
@@ -50,7 +50,7 @@ app.post('/api/register-orb', (req, res) => {
   return res.json({ status: "success" });
 });
 
-// 2. Live Presence Sync (Online Avatars)
+// 2. Live Presence Sync
 app.post('/api/update-live-presence', (req, res) => {
   const { ownerId, onlineAvatars } = req.body;
   if (!ownerId) return res.status(400).json({ error: "Missing ownerId" });
@@ -106,13 +106,33 @@ app.post('/api/record-event', async (req, res) => {
   return res.json({ status: "success" });
 });
 
-// 4. Settings & Live Data Getter
+// 4. Remote Manual Kick
+app.post('/api/manual-action', async (req, res) => {
+  const { ownerId, targetName } = req.body;
+  if (!ownerId || !targetName) return res.status(400).json({ error: "Missing parameters" });
+
+  const device = getDevice(ownerId);
+  if (!device.orbUrl) return res.status(404).json({ error: "Orb offline" });
+
+  try {
+    await axios.post(device.orbUrl, {
+      command: "MANUAL_EJECT",
+      targetName: targetName
+    }, { timeout: 4000 });
+
+    return res.json({ status: "success" });
+  } catch (err) {
+    return res.status(500).json({ error: "Failed to dispatch command to in-world orb" });
+  }
+});
+
+// 5. Settings & State Getter
 app.get('/api/settings', (req, res) => {
   const ownerId = req.query.id;
   if (!ownerId) {
     return res.json({
       status: "waiting",
-      parcelName: "Scan QR or Click Orb",
+      parcelName: "Click Orb In-World",
       region: "No Device Linked",
       totalVisits: 0,
       visitorLogs: [],
@@ -133,7 +153,7 @@ app.get('/api/settings', (req, res) => {
   });
 });
 
-// 5. Settings Setter & In-World Sync
+// 6. Settings Setter & In-World Sync
 app.post('/api/settings', async (req, res) => {
   const ownerId = req.query.id || req.body.ownerId;
   if (!ownerId) return res.status(400).json({ error: "Missing ownerId" });
@@ -147,7 +167,7 @@ app.post('/api/settings', async (req, res) => {
         command: "CONFIG_UPDATE",
         config: device.settings
       }, { timeout: 4000 });
-      console.log(`[SYNC SUCCESS] Pushed settings to orb for owner: ${ownerId}`);
+      console.log(`[SYNC SUCCESS] Settings delivered to ${ownerId}`);
     } catch (err) {
       console.error(`[SYNC FAIL] Could not reach orb for ${ownerId}: ${err.message}`);
     }
@@ -156,7 +176,7 @@ app.post('/api/settings', async (req, res) => {
   return res.json({ status: "success", settings: device.settings });
 });
 
-// 6. Discord Ping Verification
+// 7. Discord Webhook Test
 app.post('/api/test-discord', async (req, res) => {
   const { webhookUrl, ownerId } = req.body;
   if (!webhookUrl) return res.status(400).json({ error: "Missing webhook" });
@@ -178,4 +198,4 @@ app.post('/api/test-discord', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`ICE Security Multi-Tenant Engine running on port ${PORT}`));
+app.listen(PORT, () => console.log(`ICE Security Engine active on port ${PORT}`));
