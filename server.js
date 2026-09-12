@@ -10,7 +10,6 @@ app.use(express.json());
 
 const DB_FILE = path.join(__dirname, 'devices_db.json');
 
-// Helper: Read persistent devices from disk to survive Render restarts
 function loadDevices() {
   try {
     if (fs.existsSync(DB_FILE)) {
@@ -23,7 +22,6 @@ function loadDevices() {
   return {};
 }
 
-// Helper: Save devices to disk
 function saveDevices(data) {
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf8');
@@ -62,7 +60,7 @@ function getDevice(ownerId) {
   return devices[ownerId];
 }
 
-// 1. Orb Registration (In-World -> Backend)
+// 1. Orb Registration
 app.post('/api/register-orb', (req, res) => {
   const { ownerId, orbUrl, parcelName, region } = req.body;
   if (!ownerId) return res.status(400).json({ error: "Missing ownerId" });
@@ -79,17 +77,21 @@ app.post('/api/register-orb', (req, res) => {
   return res.json({ status: "success", message: "Orb registered successfully" });
 });
 
-// 2. Live Presence Sync (In-World -> Backend)
+// 2. Live Presence Sync
 app.post('/api/update-live-presence', (req, res) => {
   const { ownerId, onlineAvatars } = req.body;
   if (!ownerId) return res.status(400).json({ error: "Missing ownerId" });
 
   const device = getDevice(ownerId);
   device.onlineAvatars = onlineAvatars || [];
+  device.lastSeen = Date.now();
+  saveDevices(devices);
+
+  console.log(`[RADAR UPDATE] Owner: ${ownerId} | Avatars Online: ${device.onlineAvatars.length}`);
   return res.json({ status: "success" });
 });
 
-// 3. Event Dispatcher & Discord Notifications
+// 3. Event Dispatcher
 app.post('/api/record-event', async (req, res) => {
   const { ownerId, eventType, avatarName, reason } = req.body;
   if (!ownerId || !avatarName) return res.status(400).json({ error: "Missing parameters" });
@@ -98,7 +100,7 @@ app.post('/api/record-event', async (req, res) => {
   const now = new Date();
   const timeStr = now.toISOString().substring(11, 19) + " UTC";
 
-  if (eventType === 'enter') {
+  if (eventType === 'enter' || eventType === 'breach') {
     const exists = device.visitorLogs.find(v => v.name === avatarName);
     if (!exists) {
       device.visitorLogs.unshift({ name: avatarName, time: timeStr });
@@ -109,14 +111,14 @@ app.post('/api/record-event', async (req, res) => {
 
   if (device.settings.discordWebhook) {
     let embedTitle = "Avatar Entered";
-    let embedColor = 3066993; // Green
+    let embedColor = 3066993;
 
     if (eventType === 'leave') {
       embedTitle = "Avatar Left";
-      embedColor = 10070709; // Gray
+      embedColor = 10070709;
     } else if (eventType === 'breach') {
       embedTitle = "Intruder Ejected";
-      embedColor = 15158332; // Red
+      embedColor = 15158332;
     }
 
     try {
@@ -136,7 +138,7 @@ app.post('/api/record-event', async (req, res) => {
   return res.json({ status: "success" });
 });
 
-// 4. Remote Manual Kick (Panel -> In-World)
+// 4. Remote Manual Kick
 app.post('/api/manual-action', async (req, res) => {
   const { ownerId, targetName } = req.body;
   if (!ownerId || !targetName) return res.status(400).json({ error: "Missing parameters" });
@@ -166,7 +168,7 @@ app.post('/api/manual-action', async (req, res) => {
   }
 });
 
-// 5. Settings & State Getter (Panel Read)
+// 5. Settings & State Getter
 app.get('/api/settings', (req, res) => {
   const ownerId = req.query.id;
   if (!ownerId) {
@@ -194,7 +196,7 @@ app.get('/api/settings', (req, res) => {
   });
 });
 
-// 6. Settings Setter & In-World Sync (Panel -> Backend -> In-World)
+// 6. Settings Setter & In-World Sync
 app.post('/api/settings', async (req, res) => {
   const ownerId = req.query.id || req.body.ownerId;
   if (!ownerId) return res.status(400).json({ error: "Missing ownerId" });
@@ -216,7 +218,6 @@ app.post('/api/settings', async (req, res) => {
     const rawWhitelist = device.settings.whitelist;
     const whitelistCsv = Array.isArray(rawWhitelist) ? rawWhitelist.join(",") : (rawWhitelist || "");
 
-    // Matched flat JSON format expected by LSL Core parser
     const payload = {
       action: "SYNC_SETTINGS",
       command: "CONFIG_UPDATE",
